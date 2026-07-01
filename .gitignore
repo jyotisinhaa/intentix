@@ -1,0 +1,27 @@
+# ---- Android / Gradle build ----
+gaee/.gradle/
+gaee/build/
+gaee/app/build/
+gaee/captures/
+**/build/
+.gradle/
+
+# Machine-specific SDK path (do not commit)
+local.properties
+
+# ---- IDE ----
+.idea/
+*.iml
+.DS_Store
+
+# ---- Keystores / signing ----
+*.jks
+*.keystore
+
+# ---- JVM crash dumps / logs ----
+hs_err_pid*.log
+replay_pid*.log
+*.hprof
+
+# ---- Misc ----
+/scratchpad/

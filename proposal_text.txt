@@ -1,0 +1,806 @@
+GENERAL ACTION EXECUTION ENGINE
+for Android AI — Elderly & Accessibility Focus
+Technical Proposal & Build Roadmap  •  2026
+Executive Summary
+This document proposes a General Action Execution Engine (GAEE) — a universal AI brain layer for Android that lets users control their phone through natural conversation, with zero code written per task. The engine understands intent, decomposes it into steps, executes those steps across any app, and learns from every interaction so it gets faster over time.
+🎯  Core Promise
+The user says what they want in plain language. The AI figures out how to do it, executes it across any app on the phone, and remembers it for next time. No app-specific integrations. No programming. No hardcoded commands.
+The initial target market is elderly users (60+) and their families — a segment that is massively underserved by current AI assistants, growing rapidly, and impossible for Google to serve with the depth required.
+The Problem
+Why Phones Fail Elderly Users Today
+Smartphones were designed by young engineers for young users. The result is a daily experience of frustration, embarrassment, and dependence for hundreds of millions of elderly people worldwide.
+What elderly users face
+Cannot find apps after updates
+Accidentally delete things and panic
+Fear pressing the wrong button
+Depend on family for every small task
+Give up on features they would love
+Scammed because they cannot verify callers
+What they actually need
+Talk to the phone like a helpful grandchild
+Undo anything by saying "undo that"
+Confirmation before any irreversible action
+Family can set up trusted contacts & shortcuts
+Phone explains what it is about to do
+Scam detection built in to every call
+Why Google Will Not Solve This
+Google's Gemini Intelligence is a general-purpose agent for a billion users. That design constraint makes it impossible for them to go deep on any specific group. Specifically:
+Gemini assumes you know how to prompt it — elderly users do not
+It has no family oversight layer — a critical feature for this market
+It optimises for breadth of tasks, not depth of trust with one user profile
+Google cannot afford the liability of making irreversible actions on behalf of vulnerable users without the confirmation-first design this segment requires
+Model Strategy — Works on Every Phone
+One of the core promises of GAEE is that it works for any elderly user regardless of what phone they own. A user with a brand new Samsung S24 and a user with a 6-year-old budget Android should both be able to use the app on day one. This is achieved through a three-tier model strategy that detects capability at first launch and silently adapts.
+Tier 1 → Tier 2 → Tier 3
+On-Device Model  →  Cloud API  →  Keyword Matching
+Tier 1 — On-Device Model
+Gemini Nano is already pre-installed by Google on select phones — Pixel 6 and newer, Samsung S21 and newer. If the user has one of these phones, the app uses Gemini Nano directly. Nothing is downloaded. Nothing is installed. It is simply already there.
+Requires: Pixel 6 or newer, Samsung S21 or newer, or any device with 6GB+ RAM on Android 10+
+Detection: AIManager.isAvailable() returns true at first launch
+User experience: nothing — the app just works immediately with no setup prompt
+Cost to you: zero
+Tier 2 — Cloud API (Older Phones)
+If the phone cannot run Gemini Nano, the app asks the user once — in plain English — whether it can use the internet to understand their voice. If they agree, transcripts are sent to Claude Haiku (for fast classification) or Claude Sonnet (for complex tasks) via API.
+Triggered when: Tier 1 detection fails on first launch
+User sees: a single friendly dialog in plain English, no technical terms, shown once only
+If user agrees: cloudEnabled = true stored in SharedPreferences, never asked again
+If user declines: falls through to Tier 3 silently
+If offline later: automatically falls back to Tier 3 for that session, returns to Tier 2 when back online
+Cost to you: approximately /bin/sh.0003 per classification — about /bin/sh.18 per user per month at 20 requests per day
+💬  Exact wording for the Tier 2 consent dialog
+"Your phone needs a little help. To understand what you say, this app works best when connected to the internet. Your voice is sent securely and is never stored. You can turn this off any time.     [YES, THAT IS FINE]     [NO THANKS]"
+Tier 3 — Keyword Classifier (No Internet, No Model)
+The guaranteed baseline. Pure string matching on the transcript — no model, no network, instant. Handles all Phase 1 tasks. Every phone on earth supports this.
+Triggered when: Tier 1 unavailable AND user declined cloud, OR device is currently offline
+Covers all 10 Phase 1 tasks using simple keyword patterns
+Quality is lower — cannot handle ambiguous phrasing — but it never fails and never requires internet
+Works offline
+Old phones
+Cost
+NLU quality
+Tier 1 — On-device
+✓ Yes
+✗ No
+Free
+Full
+Tier 2 — Cloud API
+✗ No
+✓ Yes
+/bin/sh.18/user/mo
+Full
+Tier 3 — Keyword
+✓ Yes
+✓ Yes
+Free
+Phase 1 tasks only
+📱  Bottom line for elderly users
+Every user gets a working app on day one. Users with newer phones get the best experience with no prompts. Users with older phones see one friendly question and get identical quality via cloud. Users who decline cloud still get a fully working app for all everyday tasks. Nobody is left out.
+The General Action Execution Engine (GAEE)
+The key insight of GAEE is that you do not code for every task. Instead, you build five generic layers that together can handle any task on any app — including apps that do not have an API.
+Layer 1 — Intent Understanding
+The engine's entry point. Converts any natural language command into a structured, machine-readable intent object.
+Component
+What It Does
+Voice transcription
+Converts speech to text on-device using Whisper (tiny model, runs locally, no cloud needed)
+Intent classifier
+Gemini Nano (if pre-installed by Google on the phone) OR Claude API over internet (for all other phones). Either way outputs the same structured result: intent type, complexity score, extracted arguments. No model is downloaded.
+Ambiguity resolver
+If confidence is below threshold, asks one clarifying question in simple plain English before proceeding
+Safety gate
+Flags irreversible actions (calls, purchases, deletions) and routes them through a confirmation step before execution
+💡  Example
+"Send a photo to my daughter Maria" → { intent: "send_media", app: "whatsapp", contact: "Maria", media_type: "photo", confirmation_required: true }
+Layer 2 — Action Cache (The "No-Code" Engine)
+The cache is what makes this engine truly general. The first time any task runs, the AI reasons through it from scratch. Every subsequent time, it reuses the cached plan — no AI inference needed, sub-100ms execution.
+What gets stored per cache entry
+Field
+Type
+Purpose
+intent
+string
+Canonical name e.g. "send_whatsapp"
+embedding
+384-dim vector
+Semantic fingerprint for fuzzy matching
+steps
+JSON array
+Ordered sequence of tool calls with templated args
+args
+string[]
+Slots to fill from the user's command e.g. [TIME, CONTACT]
+hit_count
+integer
+Number of times this plan has been used
+success_rate
+float
+Fraction of executions that completed without error
+variants
+string[]
+Other phrasings observed for this intent
+created_by
+string
+llm | user_teach | correction
+How the cache lookup works
+User command is converted to a 384-dimensional vector using an on-device sentence embedding model (all-MiniLM-L6-v2, ~80MB)
+Cosine similarity is computed against all cached entry embeddings
+If best match exceeds 0.78 similarity threshold → cache hit, extract args and execute immediately
+If no match → route to LLM to reason a new plan, then write the successful plan back to cache
+Cache grows itself over time. After ~2 weeks of use, >90% of everyday tasks are cache hits
+⚡  Performance impact
+Cache hit: 50–150ms total execution start. Cache miss (LLM reasoning): 1–4 seconds. After one month of use, a typical elderly user's top 20 daily tasks are all cache hits.
+Layer 3 — Action Planner
+Converts the intent + args into a concrete, ordered sequence of tool calls. This is where "set an alarm for 7am" becomes specific Android API calls. The planner never hardcodes task logic — it uses a library of generic tools and lets the LLM (or cache) decide how to combine them.
+The generic tool library
+These ~15 tools cover 95% of all phone tasks without any task-specific code:
+Tool
+Android API / Method
+Covers
+SystemControl
+AlarmManager, AudioManager, PowerManager
+Alarms, reminders, volume, brightness, WiFi
+AppLauncher
+Intent + PackageManager
+Open any installed app by name
+UINavigator
+AccessibilityService + UiAutomator
+Tap, type, scroll, swipe inside any app
+ContactResolver
+ContactsContract
+Look up any contact by name, relationship, nickname
+Communicator
+TelephonyManager, SmsManager
+Make calls, send SMS, block numbers
+MediaController
+MediaSession, CameraManager
+Play/pause/skip music, take photos, record video
+WebFetcher
+OkHttp
+Call any REST API: weather, Uber, DoorDash, news
+NotificationReader
+NotificationListenerService
+Read, summarise, dismiss notifications
+ScreenReader
+AccessibilityService
+Read text from any screen without an API
+TTS / Speaker
+TextToSpeech
+Speak results back to the user in clear plain English
+Confirmer
+DialogFragment
+Show big-button confirmation dialogs before risky actions
+Scheduler
+WorkManager
+Queue deferred tasks to run at night on charge
+The UINavigator tool is the "no API needed" superpower. Using Android's Accessibility Service, it can read the UI tree of any app, find elements by label, and interact with them. This is how the engine can order food on DoorDash, book an Uber, or post to Instagram — without any integration with those apps.
+Layer 4 — Three-Tier Model Brain
+The engine adapts to whatever phone the user has. Every phone is supported — from a brand new flagship to a 6-year-old budget device. The tier is detected once at first launch and stored. The rest of the engine never changes based on tier.
+Tier 1 — On-Device
+Tier 2 — Cloud API
+Tier 3 — Keyword
+Model
+Gemini Nano (ML Kit)
+Claude Haiku or GPT-4o mini
+No model — string matching
+Requires
+Pixel 6+ / Samsung S21+
+Any phone + internet
+Any phone, no internet
+Latency
+0.5 – 1 second
+1 – 3 seconds
+Instant (<50ms)
+Cost
+Free always
+~$0.0003 per call
+Free always
+Privacy
+Data never leaves phone
+Transcript sent to API
+Data never leaves phone
+Works offline
+Yes
+No
+Yes
+Quality
+Full NLU, handles any phrasing
+Full NLU, handles any phrasing
+Phase 1 tasks only, exact keywords
+User sees
+Nothing — silent
+One-time consent dialog
+Nothing — silent
+🔑  How tier selection works
+On first launch, the app silently checks if Gemini Nano is available. If yes → Tier 1, done. If no → show a single friendly plain-English dialog asking permission to use the cloud. If user agrees → Tier 2. If user declines → Tier 3. This decision is stored and never asked again. If the phone is offline and Tier 2 is selected, it automatically falls back to Tier 3 for that session.
+For complex tasks (trip planning, research, multi-step reasoning) all tiers route to the large cloud model regardless — this runs at night when the phone is on charge, via WorkManager. Tier only affects the intent classification step, not the execution of heavy tasks.
+Layer 5 — Execution & Learning Loop
+After the action plan runs, the engine closes the loop: it checks if the task succeeded, speaks the result to the user, writes to cache, and adjusts future behaviour.
+Execute each step in the action plan sequentially using the tool library
+After each step, verify success by reading the screen state (ScreenReader tool)
+If a step fails, retry once with a modified approach, then ask the user to take over
+Speak the result in simple plain English ("Done! I sent your photo to Maria.")
+Write the successful plan + outcome to cache with updated hit_count and success_rate
+If the user corrects the engine ("No, I meant Maria Rodriguez not Maria Smith"), update the contact resolution preference and store the correction
+Weekly: large model reviews all low-success-rate cache entries and proposes improved plans
+Elderly-First Design Decisions
+The engine is general-purpose, but these design choices make it specifically right for elderly users. None of these are available in Google Gemini or Siri.
+1. Confirmation Before Everything Risky
+Any action classified as irreversible (call, purchase, delete, send message) triggers a large-button confirmation dialog spoken aloud before execution. The user can say "yes", "no", or "wait" at any point.
+2. Family Dashboard
+Adult children get a companion app showing:
+What tasks their parent attempted this week and whether they succeeded
+Which contacts are marked as trusted (calls from others are flagged)
+Ability to pre-configure shortcuts: "When Dad says 'call the doctor', always call Dr. Patel at 555-0192"
+Scam alert log: calls and messages the engine flagged as suspicious
+This is a critical insight: the paying customer is often the adult child, not the elderly parent. The family dashboard is your primary sales and retention tool.
+3. Plain English Everything
+The TTS engine is configured to speak at 0.85x speed, use simple vocabulary, and always confirm what it just did. No technical jargon, no error codes. If something fails, it says "I couldn't do that — would you like me to try again or call Maria for help?"
+4. Teach Mode
+If the engine cannot figure out a task, it enters teach mode: it asks the user to show it once while it watches using the ScreenReader. It records the sequence of taps and writes a new cache entry. Next time, it does it automatically.
+5. Scam Detection
+The NotificationReader and call handler run every incoming call and message through a lightweight classifier checking for:
+Unknown numbers claiming to be known people
+Urgency language ("act now", "your account will be closed")
+Requests for money, gift cards, or personal information
+Mismatched caller ID vs. speech content
+If flagged, the engine speaks a quiet alert to the user: "This might be a scam. Want me to hang up and call your daughter to check?"
+Build Plan — Step by Step
+Organised into four phases. Each phase is independently shippable. You do not need to complete all phases before getting real users.
+Phase 1 — The Skeleton (Weeks 1–4)
+Goal: voice command → correct tool call → confirmed execution for the 10 most common elderly tasks.
+#
+Task
+Detail
+1
+Android project setup
+Kotlin, minimum SDK 26, Accessibility Service permission, Overlay permission, microphone permission
+2
+Voice pipeline
+Use Android SpeechRecognizer for on-device speech-to-text. Built into every Android phone. No download needed.
+3
+Model detection
+On first launch call AIManager.isAvailable(). If Gemini Nano is pre-installed (Pixel/Samsung flagship) use it. Otherwise show the cloud consent dialog and use Claude API. No model is downloaded to the phone.
+4
+Intent classifier prompt
+Write system prompt that outputs structured JSON: {intent, args, complexity, confirmation_required}. Test with 50 sample commands
+5
+Tool library v1
+Implement SystemControl, AppLauncher, Communicator, TTS. These cover: alarms, reminders, calls, SMS, open apps, volume
+6
+Hardcoded action plans
+For the top 10 tasks, write action plans manually. This is temporary — Phase 2 replaces them with the cache
+7
+Confirmation dialog
+Big-button overlay dialog. Spoken aloud. "Tap YES to call Maria, or NO to cancel." Cannot be bypassed
+8
+First user test
+Find one elderly person (ideally a grandparent). Give them the app. Watch silently for 1 hour. Write down everything that confuses them
+✅  Phase 1 exit criteria
+A 70-year-old can set an alarm, call a contact, send an SMS, and open WhatsApp using only voice — without any instruction.
+Phase 2 — The Cache Engine (Weeks 5–8)
+Goal: replace hardcoded plans with the general cache. The engine now learns from every interaction.
+Integrate all-MiniLM-L6-v2 on-device for sentence embeddings (use ONNX Runtime Android)
+Build SQLite schema for action cache (intent, embedding blob, steps JSON, metadata)
+Implement cosine similarity search across all cache entries on each command
+Build the cache miss → LLM reasoning → cache write pipeline
+Implement UINavigator using AccessibilityService (this unlocks every app without an API)
+Add WebFetcher tool and connect weather API (OpenWeatherMap free tier)
+Add MediaController and test with YouTube, Spotify, phone gallery
+Remove all hardcoded plans from Phase 1. Everything now goes through cache
+Run 100 test commands across 20 different tasks. Measure hit rate and success rate
+✅  Phase 2 exit criteria
+The engine handles any of the original 13 example tasks (alarm, WhatsApp, YouTube, weather, Uber, etc.) without any task-specific code. All plans are discovered and cached automatically.
+Phase 3 — Family Dashboard & Polish (Weeks 9–12)
+Goal: build the feature that makes families pay for this.
+Build companion app for family members (React Native or Flutter for cross-platform)
+Implement sync layer: on-device events → encrypted cloud log → family app
+Build family dashboard: task history, trusted contacts, shortcut configuration
+Implement scam detection classifier (fine-tuned on scam call transcripts)
+Add teach mode: screen recording → action plan generation
+Add large model integration via API (Claude or GPT-4o) for complex tasks
+Build WorkManager job for night-time heavy tasks (trip planning, summaries)
+UX polish: font size, contrast, slow TTS, friendly error messages
+Recruit 10 elderly beta users through family networks. Run for 4 weeks
+✅  Phase 3 exit criteria
+10 elderly users actively using the app daily. Family members say "I get fewer help calls from my parent." Net Promoter Score from families > 50.
+Phase 4 — Distribution & Business (Weeks 13–20)
+Goal: get to 1,000 paying families.
+Launch on Google Play with a clean listing targeting "phone for parents" and "senior phone assistant" keywords
+Pricing: freemium. Basic features free. Family dashboard + large model tasks = $9.99/month per family
+Partnership outreach: senior living communities, AARP, elder care agencies
+Content strategy: YouTube videos showing the app being used by real elderly users
+Referral programme: families get 1 free month for each family they refer
+Start collecting testimonials: "My mom called me 5 times less this week"
+Technology Stack
+Component
+Technology
+Why
+Android app
+Kotlin + Jetpack Compose
+Modern, concise, well-documented
+Speech to text
+Android SpeechRecognizer (built-in)
+Already on every Android phone. No download. Converts voice to text before sending to Gemini Nano or Claude API.
+Tier 1 — On-device
+Gemini Nano (pre-installed by Google on Pixel 6+, Samsung S21+)
+Already on the phone. Nothing downloaded. Detected at launch via AIManager.isAvailable(). Free, offline, private.
+Tier 2 — Cloud API
+Claude Haiku 3.5 API (classification) + Claude Sonnet 4 (complex tasks)
+Used for all phones without Gemini Nano — Redmi, iQOO, Realme, OnePlus, any budget phone. Phone sends text over internet, Claude responds. ~$0.0003/classification call.
+Tier 2 — Cloud model (large)
+Claude Sonnet 4 API (complex tasks)
+Best reasoning for trip planning, research, multi-step tasks. Runs at night.
+Tier 3 — Keyword classifier
+Pure Kotlin string matching
+No model, no internet, instant. Last resort fallback. Covers Phase 1 tasks only.
+Tier detection
+AIManager.isAvailable() at first launch
+Returns true only on phones where Google pre-installed Gemini Nano. All others go to cloud. No download in either case. Decision stored in SharedPreferences permanently.
+Embeddings (Phase 2)
+all-MiniLM-L6-v2 — small 80MB file downloaded once at first launch
+Used only for action cache lookup — not for AI reasoning. One-time 80MB download on WiFi. Much smaller than a photo album. This is the only thing ever downloaded to the phone.
+Cache DB (Phase 2)
+SQLite via Room
+Built into Android, no setup, reliable
+App control (Phase 2)
+AccessibilityService + UiAutomator2
+The "no API needed" superpower for controlling any app
+Background tasks
+WorkManager
+Handles night-time deferred tasks reliably
+Family app (Phase 3)
+React Native or Flutter
+One codebase for iOS + Android families
+Backend (Phase 3)
+Supabase (Postgres + Auth + Realtime)
+Managed, fast to set up, free tier available
+TTS
+Android TextToSpeech with slow rate
+Built-in, no cost, works offline
+What You Explicitly Do Not Build
+🚫  The hardcoding trap
+The most common mistake when building AI assistants is writing specific code for every task. "If the user says alarm, call AlarmManager. If the user says WhatsApp, launch com.whatsapp." This creates a system that has 50 commands on day one and stops growing. GAEE is designed to never fall into this trap.
+You do not build:
+A handler for "set alarm" — the cache and UINavigator handle it
+A handler for "open WhatsApp" — AppLauncher + UINavigator handle it
+A DoorDash integration — UINavigator navigates DoorDash like a human would
+A YouTube integration — UINavigator + MediaController handle it
+An Uber integration — WebFetcher calls Uber's API, or UINavigator uses the app
+A per-city travel planner — the large model generates the plan from scratch each time
+You build once:
+The generic tool library (~15 tools covering all interaction types)
+The cache lookup and write pipeline
+The intent classifier prompt
+The action planner that combines tools into plans
+The confirmation and safety layer
+Everything else the LLM figures out, caches, and reuses.
+Risks & Mitigations
+Risk
+Severity
+Mitigation
+AccessibilityService gets blocked by app updates
+Medium
+Monitor top 20 apps weekly. Cache invalidation + automatic re-learning via teach mode
+LLM makes a wrong action (calls wrong person, deletes something)
+High
+Confirmation dialog before every irreversible action. Undo stack for reversible actions
+Google restricts AccessibilityService for non-accessibility apps
+Medium
+Position the app explicitly as an accessibility tool. File under accessibility category on Play Store
+Elderly users distrust AI making decisions for them
+Medium
+Every action is narrated before execution. Family dashboard provides transparency. Teach mode gives user control
+Cloud LLM API cost scales unexpectedly
+Low
+Cache absorbs >90% of repeat tasks. Large model only runs at night. Monthly cost cap per user
+Privacy concerns about screen reading
+High
+Clear onboarding explaining what data is read. Sensitive screens (banking) excluded by default. On-device processing for all personal data
+Success Metrics
+Metric
+Month 1
+Month 3
+Month 6
+Cache hit rate
+40%
+75%
+>90%
+Task success rate
+70%
+85%
+>93%
+Daily active elderly users
+5
+50
+500
+Paying families
+0
+20
+200
+Family NPS
+—
+>40
+>60
+Help calls reduced (self-reported)
+—
+30%
+60%
+Monthly recurring revenue
+$0
+$200
+$2,000
+Where to Start Tomorrow
+If you read this entire proposal and want to begin, do exactly these three things first — nothing else:
+Set up a blank Android (Kotlin) project with AccessibilityService permission declared. Run it on a device and confirm the service activates. This takes 2 hours and tells you if your development environment is ready.
+Write the intent classifier prompt. Give it 30 different voice commands and manually verify the JSON output makes sense. This is the brain — getting it right early saves weeks later.
+Find one elderly person willing to try things for 30 minutes. Not to test the app — there is no app yet. Just watch them use their current phone. Write down every moment of confusion. That list is your product roadmap.
+🚀  Final thought
+Google proved the idea works. Rabbit proved that "everyone" is the wrong target. Your edge is going deep on one underserved group and building something so specifically right for them that Google would have to rebuild their entire product to compete. That is a defensible business.
+PHASE 1 — ENGINEERING HANDOFF
+Everything a coding session needs to start and finish Phase 1 without ambiguity
+📋  How to use this section
+Paste this entire section — plus the context below — into a new Claude conversation to start coding. The coding session should not need to ask you any clarifying questions about Phase 1. Everything is specified here.
+Context to paste at the start of the coding session
+Copy this block exactly into the first message:
+You are helping me build Phase 1 of a General Action Execution Engine (GAEE) — an AI brain layer for Android targeted at elderly users (60+).
+Phase 1 goal: a working Android app where a user speaks a command, the phone understands it, confirms with the user, and executes the action. No UI beyond a mic button and confirmation dialog. No cache yet. No UINavigator yet. Just the voice → intent → tool → confirm → execute pipeline working reliably for 10 specific tasks.
+Target language: Kotlin. Minimum SDK: 26. Architecture: MVVM with clean separation between UI, engine, and tools. Each tool is its own class. The intent classifier uses Gemini Nano if it is already pre-installed on the phone (Pixel 6+, Samsung S21+). For all other phones — Redmi, iQOO, Realme, OnePlus, any budget phone — it sends the transcript to Claude API over the internet. No model is ever downloaded to the phone.
+Do not build anything beyond Phase 1 scope. Do not add a cache, do not add UINavigator, do not add a family dashboard. Build only what is listed in the Phase 1 task list. Ask me before making any architectural decision not covered in this document.
+Project Structure
+The coding Claude must create exactly this folder structure. Do not deviate.
+app/
+src/main/
+java/com/gaee/
+ui/
+MainActivity.kt          ← mic button, minimal UI
+ConfirmationDialog.kt     ← big-button YES/NO overlay
+engine/
+VoiceListener.kt          ← always-on mic, pushes text to engine
+IntentClassifier.kt       ← calls LLM, returns IntentResult
+ActionPlanner.kt          ← maps IntentResult → list of ToolCall
+ExecutionEngine.kt        ← runs ToolCall list, handles errors
+tools/
+BaseTool.kt               ← interface: execute(args): ToolResult
+AlarmTool.kt
+ReminderTool.kt
+CallTool.kt
+SmsTool.kt
+AppLauncherTool.kt
+VolumeTool.kt
+WeatherTool.kt
+WifiTool.kt
+CameraTool.kt
+TtsTool.kt                ← speaks results back
+model/
+IntentResult.kt           ← data class
+ToolCall.kt               ← data class
+ToolResult.kt             ← data class
+res/
+layout/activity_main.xml
+AndroidManifest.xml
+build.gradle.kts
+Exact Dependencies (build.gradle.kts)
+Use exactly these versions. Do not upgrade without testing.
+Dependency
+Version
+Purpose
+com.google.android.gms:play-services-mlkit-language-id
+17.0.0
+Detects whether Gemini Nano is pre-installed. Does not download the model — only checks availability.
+com.squareup.okhttp3:okhttp
+4.12.0
+HTTP client for Claude API calls (Tier 2 cloud path)
+androidx.lifecycle:lifecycle-viewmodel-ktx
+2.8.0
+MVVM ViewModel
+androidx.lifecycle:lifecycle-runtime-ktx
+2.8.0
+Coroutine lifecycle scopes
+org.jetbrains.kotlinx:kotlinx-coroutines-android
+1.8.0
+Async execution of tool calls
+com.squareup.retrofit2:retrofit
+2.11.0
+Weather API HTTP calls
+com.squareup.retrofit2:converter-gson
+2.11.0
+JSON parsing for weather response
+minSdk
+26
+Android 8.0 — covers 95%+ of elderly devices in use
+targetSdk
+35
+Latest stable Android
+compileSdk
+35
+Must match targetSdk
+Required Android Permissions (AndroidManifest.xml)
+All of these must be declared. The ones marked runtime must also be requested from the user at runtime.
+Permission
+Type
+Needed for
+RECORD_AUDIO
+Runtime
+Voice input
+CALL_PHONE
+Runtime
+CallTool — initiating calls
+SEND_SMS
+Runtime
+SmsTool — sending text messages
+READ_CONTACTS
+Runtime
+Resolving "call Maria" to a phone number
+ACCESS_FINE_LOCATION
+Runtime
+WeatherTool — current location for weather
+INTERNET
+Manifest only
+WeatherTool API call
+MODIFY_AUDIO_SETTINGS
+Manifest only
+VolumeTool
+CHANGE_WIFI_STATE
+Manifest only
+WifiTool
+ACCESS_WIFI_STATE
+Manifest only
+WifiTool — read current state
+SYSTEM_ALERT_WINDOW
+Special (Settings)
+ConfirmationDialog overlay
+CAMERA
+Runtime
+CameraTool — open camera
+SCHEDULE_EXACT_ALARM
+Manifest only
+AlarmTool on Android 12+
+The Intent Classifier — Exact Prompt
+This is the most important part of Phase 1. The coding Claude must use this prompt exactly as written for the LLM call. Do not paraphrase it.
+SYSTEM PROMPT:
+You are an intent classifier for an Android phone assistant designed for elderly users.
+The user will speak a command in natural language. Your job is to classify it.
+You must respond with ONLY a valid JSON object. No explanation. No markdown. No extra text.
+JSON format:
+{
+"intent": "<intent_name>",
+"confidence": <0.0 to 1.0>,
+"args": { <key>: <value> },
+"confirmation_required": <true|false>,
+"speak_before": "<what to say to user before confirming>",
+"unknown": <true|false>
+}
+Valid intents and their args:
+set_alarm        → args: { time: "HH:MM", label: "string or null" }
+set_reminder     → args: { time: "HH:MM", message: "string" }
+call_contact     → args: { name: "string" }
+send_sms         → args: { name: "string", message: "string" }
+open_app         → args: { app_name: "string" }
+get_weather      → args: {}
+set_volume       → args: { direction: "up|down", level: 0-100 or null }
+toggle_wifi      → args: { state: "on|off" }
+open_camera      → args: {}
+Rules:
+- confirmation_required must be true for: call_contact, send_sms
+- confirmation_required is false for: set_alarm, set_reminder, get_weather, set_volume, toggle_wifi, open_app, open_camera
+- If you cannot match any intent with confidence >= 0.6, set unknown: true and intent: "unknown"
+- speak_before must be simple plain English an elderly person can understand
+- speak_before example for call_contact: "I will call Maria now. Is that okay?"
+- speak_before example for set_alarm: "Setting your alarm for 7am."
+USER COMMAND: {{USER_COMMAND}}
+Data Models
+The coding Claude must implement these exact data classes. They are the contract between all layers.
+// IntentResult.kt
+data class IntentResult(
+val intent: String,
+val confidence: Float,
+val args: Map<String, String>,
+val confirmationRequired: Boolean,
+val speakBefore: String,
+val unknown: Boolean = false
+)
+// ToolCall.kt
+data class ToolCall(
+val toolName: String,
+val args: Map<String, String>
+)
+// ToolResult.kt
+data class ToolResult(
+val success: Boolean,
+val speakAfter: String,   // what TTS says after execution
+val error: String? = null
+)
+// BaseTool.kt
+interface BaseTool {
+val name: String
+suspend fun execute(args: Map<String, String>): ToolResult
+}
+The 10 Hardcoded Action Plans
+For Phase 1 only, ActionPlanner.kt maps each intent to a fixed list of ToolCalls. This is temporary scaffolding. Phase 2 replaces it with the cache. The coding Claude must implement exactly these mappings.
+Intent
+Tool sequence
+Notes
+set_alarm
+AlarmTool → TtsTool
+"Alarm set for {time}"
+set_reminder
+ReminderTool → TtsTool
+"Reminder set for {time}"
+call_contact
+CallTool → TtsTool
+Confirm first. "Calling {name} now"
+send_sms
+SmsTool → TtsTool
+Confirm first. "Message sent to {name}"
+open_app
+AppLauncherTool
+App name fuzzy-matched to installed packages
+get_weather
+WeatherTool → TtsTool
+"Today in {city}: {description}, {temp} degrees"
+set_volume
+VolumeTool → TtsTool
+"Volume turned {direction}"
+toggle_wifi
+WifiTool → TtsTool
+"WiFi turned {state}"
+open_camera
+CameraTool
+Launches camera intent directly
+unknown
+TtsTool only
+"Sorry, I did not understand that. Please try again."
+UI Specification
+Phase 1 has exactly two screens. No more. The coding Claude must not add anything else.
+Screen 1 — Main Screen
+Full screen, white background
+Top: app name "Hello" in large friendly font (not GAEE — the user never sees technical names)
+Centre: single large circular microphone button, minimum 120dp diameter, deep blue fill
+Below button: status text — "Tap to speak" when idle, "Listening..." when active, "Thinking..." when classifying
+Bottom: small grey text "Made for [User Name]" — hardcoded for now, configurable in Phase 3
+No menu. No settings. No other buttons. Nothing else.
+Screen 2 — Confirmation Dialog
+Full-screen overlay (not a small dialog — elderly users miss small dialogs)
+Large text at top: the speakBefore string from IntentResult
+Two buttons side by side, each minimum 80dp tall: green YES button, red NO button
+TTS automatically reads the speakBefore text when the dialog appears
+User can tap YES, tap NO, or say "yes" / "no" aloud — voice still works during confirmation
+5-second timeout with visible countdown — if no response, auto-cancels and says "Cancelled for safety"
+Model Strategy — Three-Tier Fallback
+The app must work on any Android phone regardless of age or specs. The coding Claude must implement a three-tier fallback chain. The phone automatically detects which tier it can support and uses the best available option. The user never sees technical details — they only see a one-time setup prompt if cloud is needed.
+🔑  Core principle
+Every tier produces the same IntentResult data class. The rest of the engine — ActionPlanner, ExecutionEngine, all tools — never knows or cares which tier handled classification. The tier is an implementation detail completely hidden inside IntentClassifier.kt.
+Tier 1 — On-Device Model (Best, used when available)
+Requires: Pixel 6+ or Samsung S21+ or any device with 6GB+ RAM and Android 10+.
+Use Gemini Nano via Android ML Kit AIManager API
+Completely free, zero latency, works fully offline, data never leaves the device
+On app first launch, call AIManager.isAvailable(). If true, Gemini Nano is already on the phone — use it. If false, go to Tier 2. No download happens in either case.
+No user prompt needed — just silently use it
+Tier 2 — Cloud API (Fallback for older phones, requires internet)
+Used when: device does not support Gemini Nano. Requires internet connection.
+On first launch, if Tier 1 unavailable, show a single friendly one-time dialog (see exact wording below)
+If user agrees, store cloudEnabled = true in SharedPreferences and proceed
+If user declines, fall through to Tier 3
+For classification calls: send transcript to Claude API (claude-haiku-3-5 — fastest and cheapest) with the intent classifier prompt
+Cost: approximately $0.0003 per classification call — negligible for daily use
+Add INTERNET permission check before every cloud call. If offline, fall through to Tier 3 automatically
+Show a small subtle indicator in the status text: "Using cloud" — not alarming, just honest
+Tier 3 — Keyword Classifier (Last resort, always works, no internet needed)
+Used when: Tier 1 unavailable AND (user declined cloud OR no internet connection). Handles the 10 Phase 1 tasks only.
+Pure string matching on the transcript — no model, no network, instant
+"alarm" or "wake me" → set_alarm
+"remind" → set_reminder
+"call" → call_contact
+"message" or "text" or "send" → send_sms
+"weather" or "temperature" → get_weather
+"volume" or "louder" or "quieter" → set_volume
+"wifi" or "wi-fi" → toggle_wifi
+"camera" or "photo" → open_camera
+No match found → open_app (pass full transcript as app_name, let AppLauncherTool fuzzy-match it)
+The One-Time Cloud Permission Dialog — Exact Wording
+This dialog appears ONCE on first launch if the phone cannot run the AI model locally. It must use exactly this wording. Do not change it. Plain English. No technical terms.
+Your phone needs a little help
+To understand what you say, this app uses a smart assistant. Your phone works best when it connects to the internet to use one.
+Your voice is sent securely and is never stored. You can turn this off any time.
+[  YES, THAT IS FINE  ]          [  NO THANKS  ]
+ModelTier Enum and Detection Logic
+IntentClassifier.kt must implement this detection flow on every cold start:
+// ModelTier.kt
+enum class ModelTier { ON_DEVICE, CLOUD, KEYWORD }
+// Inside IntentClassifier.kt — called once at startup
+suspend fun detectAndStoreTier(context: Context): ModelTier {
+val prefs = context.getSharedPreferences("gaee", Context.MODE_PRIVATE)
+// Tier 1: on-device model available?
+val aiAvailable = AIManager.getInstance(context).isAvailable()
+if (aiAvailable) {
+prefs.edit().putString("model_tier", "ON_DEVICE").apply()
+return ModelTier.ON_DEVICE
+}
+// Tier 2: cloud previously approved?
+if (prefs.getBoolean("cloud_enabled", false)) {
+return ModelTier.CLOUD
+}
+// Tier 2: ask user (first time only)
+val userApproved = showCloudPermissionDialog(context)
+if (userApproved) {
+prefs.edit().putBoolean("cloud_enabled", true).apply()
+return ModelTier.CLOUD
+}
+// Tier 3: keyword fallback
+return ModelTier.KEYWORD
+}
+// classify() — called on every voice command
+suspend fun classify(transcript: String): IntentResult {
+val hasInternet = isNetworkAvailable(context)
+return when {
+tier == ModelTier.ON_DEVICE -> classifyOnDevice(transcript)
+tier == ModelTier.CLOUD && hasInternet -> classifyCloud(transcript)
+else -> classifyKeywords(transcript)  // Tier 3 or offline fallback
+}
+}
+📱  What this means for elderly users
+A user with a brand new Samsung S24 never sees any setup prompt — the app just works. A user with a 5-year-old budget Android sees the one-time cloud dialog written in plain English. If they say no, the app still works for all 10 Phase 1 tasks using keyword matching. Nobody is left behind.
+Error Handling Rules
+The coding Claude must follow these rules for every error case. Elderly users must never see a crash, a technical error message, or a silent failure.
+Error scenario
+What the app must do
+Microphone not heard / silence
+After 5 seconds of silence, say "I did not hear anything. Tap the button and try again."
+Intent confidence < 0.6
+Say "I am not sure what you meant. Could you say that again more slowly?"
+Contact name not found
+Say "I could not find {name} in your contacts. Do you want to try a different name?"
+Call failed
+Say "I could not make the call. Please try again or dial manually."
+SMS failed
+Say "I could not send the message. Please try again."
+Weather API failure
+Say "I could not get the weather right now. Please check again in a moment."
+App not found
+Say "I could not find that app on your phone."
+Any unexpected crash
+Catch all exceptions at ExecutionEngine level. Log the error. Say "Something went wrong. Please tap the button and try again."
+Permission denied
+Explain in plain English why the permission is needed and open the settings screen directly
+What the Coding Claude Must NOT Do
+🚫  Hard boundaries for Phase 1
+These are not suggestions. If the coding Claude proposes any of the following, reject it and redirect back to Phase 1 scope.
+Do NOT implement the action cache or embedding model — that is Phase 2
+Do NOT implement UINavigator or AccessibilityService app control — that is Phase 2
+Do NOT implement the family dashboard or any cloud sync — that is Phase 3
+Do NOT implement the large cloud LLM call — that is Phase 2
+Do NOT add settings screens, onboarding flows, or account creation
+Do NOT use any third-party UI libraries (Material Design components only)
+Do NOT store any data remotely — everything in Phase 1 is local only
+Do NOT try to make the app look beautiful — function first, polish in Phase 3
+Definition of Done — Phase 1
+Phase 1 is complete when ALL of the following are true. Not some. All.
+Acceptance criterion
+1
+A person can set an alarm using only their voice. The alarm fires at the correct time.
+2
+A person can call a contact by name. The phone dials the correct number after confirmation.
+3
+A person can send an SMS by voice. The message arrives with the correct text.
+4
+A person can ask for the weather and hear a spoken response in plain English.
+5
+A person can open any installed app by saying its name.
+6
+Volume up and volume down work by voice.
+7
+WiFi on and WiFi off work by voice.
+8
+The camera opens by voice.
+9
+Every risky action (call, SMS) shows a confirmation dialog spoken aloud before executing.
+10
+No command produces a crash, a blank screen, or a technical error message.
+11
+The app works on a device without Gemini Nano support (keyword fallback activates).
+12
+A real elderly person (60+) completes tasks 1, 2, and 4 without any instruction from you.
+⚠️  Criterion 12 is the only one that matters
+All the others can pass and the phase is still not done if criterion 12 fails. The measure of Phase 1 is not working code — it is a real elderly person succeeding alone.
+Phase 1 Engineering Handoff  •  General Action Execution Engine  •  Confidential
+General Action Execution Engine — Technical Proposal  •  Confidential

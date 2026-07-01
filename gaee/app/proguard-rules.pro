@@ -1,0 +1,2 @@
+-keep class com.gaee.model.** { *; }
+-keep class com.gaee.engine.** { *; }
