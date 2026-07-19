@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.provider.AlarmClock
 import com.gaee.model.ToolResult
+import java.util.Calendar
 
 class AlarmTool(private val context: Context) : BaseTool {
     override val name = "AlarmTool"
@@ -21,10 +22,14 @@ class AlarmTool(private val context: Context) : BaseTool {
             val minute = if (parts.size > 1) parts[1].trim().toInt() else 0
             val isTomorrow = args["tomorrow"] == "true"
 
+            val days = parseDays(args["days"])
+
             val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
                 putExtra(AlarmClock.EXTRA_HOUR, hour)
                 putExtra(AlarmClock.EXTRA_MINUTES, minute)
                 putExtra(AlarmClock.EXTRA_MESSAGE, label)
+                // EXTRA_DAYS makes it a recurring weekly alarm on those weekdays.
+                if (days.isNotEmpty()) putIntegerArrayListExtra(AlarmClock.EXTRA_DAYS, ArrayList(days))
                 // Skip UI for normal alarms; show UI for tomorrow so user can confirm the date
                 putExtra(AlarmClock.EXTRA_SKIP_UI, !isTomorrow)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -32,10 +37,11 @@ class AlarmTool(private val context: Context) : BaseTool {
             context.startActivity(intent)
 
             val displayTime = formatTime(hour, minute)
-            val speakText = if (isTomorrow)
-                "I have opened the alarm for $displayTime. Please tap tomorrow and then save."
-            else
-                "Your alarm is set for $displayTime."
+            val speakText = when {
+                isTomorrow -> "I have opened the alarm for $displayTime. Please tap tomorrow and then save."
+                days.isNotEmpty() -> "Your alarm is set for $displayTime, ${daysPhrase(days)}."
+                else -> "Your alarm is set for $displayTime."
+            }
             ToolResult(true, speakText)
         } catch (e: Exception) {
             ToolResult(false, "I could not set the alarm. Please try again.", e.message)
@@ -77,6 +83,25 @@ class AlarmTool(private val context: Context) : BaseTool {
         } catch (e: Exception) {
             ToolResult(false, "I could not cancel the alarm. Please try again.", e.message)
         }
+    }
+
+    // "MON,TUE,..." → Calendar day constants for AlarmClock.EXTRA_DAYS.
+    private fun parseDays(daysArg: String?): List<Int> {
+        if (daysArg.isNullOrBlank()) return emptyList()
+        val map = mapOf(
+            "MON" to Calendar.MONDAY, "TUE" to Calendar.TUESDAY, "WED" to Calendar.WEDNESDAY,
+            "THU" to Calendar.THURSDAY, "FRI" to Calendar.FRIDAY, "SAT" to Calendar.SATURDAY,
+            "SUN" to Calendar.SUNDAY
+        )
+        return daysArg.split(",").mapNotNull { map[it.trim().uppercase()] }
+    }
+
+    private fun daysPhrase(days: List<Int>): String = when {
+        days.size == 7 -> "every day"
+        days.toSet() == setOf(Calendar.MONDAY, Calendar.TUESDAY, Calendar.WEDNESDAY,
+            Calendar.THURSDAY, Calendar.FRIDAY) -> "every weekday"
+        days.toSet() == setOf(Calendar.SATURDAY, Calendar.SUNDAY) -> "on weekends"
+        else -> "on your chosen days"
     }
 
     private fun formatTime(hour: Int, minute: Int): String {

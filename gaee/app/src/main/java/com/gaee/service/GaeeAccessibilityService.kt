@@ -144,6 +144,33 @@ class GaeeAccessibilityService : AccessibilityService() {
         return ToolResult(false, "Timed out waiting for \"$targetText\".")
     }
 
+    /**
+     * Classifies the current screen as CREDENTIAL / PAYMENT / NONE so ExecutionEngine can hand
+     * control back to the user on sensitive screens instead of tapping/typing on them.
+     */
+    fun assessSensitivity(): com.gaee.engine.SensitiveScreenGuard.Kind {
+        val root = rootInActiveWindow ?: return com.gaee.engine.SensitiveScreenGuard.Kind.NONE
+        val collected = LinkedHashSet<String>()
+        collectText(root, collected)
+        return com.gaee.engine.SensitiveScreenGuard.assess(
+            packageName = root.packageName?.toString(),
+            screenText = collected.joinToString("\n"),
+            hasPasswordField = hasPasswordField(root)
+        )
+    }
+
+    private fun hasPasswordField(node: AccessibilityNodeInfo?): Boolean {
+        node ?: return false
+        if (node.isPassword) return true
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = hasPasswordField(child)
+            child.recycle()
+            if (found) return true
+        }
+        return false
+    }
+
     private fun collectText(node: AccessibilityNodeInfo?, out: MutableSet<String>) {
         node ?: return
         // Skip invisible noise (progress bars, dividers carry no useful label)

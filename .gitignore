@@ -9,6 +9,11 @@ gaee/captures/
 # Machine-specific SDK path (do not commit)
 local.properties
 
+# ---- Secrets (API keys) — never commit ----
+.env
+gaee/.env
+**/.env
+
 # ---- IDE ----
 .idea/
 *.iml

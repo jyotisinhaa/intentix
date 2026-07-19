@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- USE_EXACT_ALARM is auto-granted for alarm/reminder apps (SCHEDULE_EXACT_ALARM can be revoked) -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <!-- Runtime permissions (also declared here) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -79,6 +81,20 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!-- Fires when a reminder is due (notification + spoken message + reschedule) -->
+        <receiver
+            android:name=".receiver.ReminderReceiver"
+            android:exported="false" />
+
+        <!-- Re-arms saved reminders after a reboot -->
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

@@ -2,6 +2,7 @@
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#FFFFFF">
@@ -19,6 +20,35 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         android:layout_marginTop="80dp" />
+
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/card_scam_history"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:clickable="true"
+        android:focusable="true"
+        app:cardBackgroundColor="#FFF3E0"
+        app:cardCornerRadius="16dp"
+        app:strokeColor="#E65100"
+        app:strokeWidth="1dp"
+        app:layout_constraintTop_toBottomOf="@id/tv_app_name"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="16dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp">
+
+        <TextView
+            android:id="@+id/tv_scam_history"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="16dp"
+            android:textSize="16sp"
+            android:textColor="#B23C00"
+            tools:text="⚠ 1 scam warning. Tap to see." />
+
+    </com.google.android.material.card.MaterialCardView>
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btn_mic"
@@ -53,6 +83,36 @@
         android:layout_marginTop="32dp"
         android:layout_marginStart="32dp"
         android:layout_marginEnd="32dp" />
+
+    <TextView
+        android:id="@+id/tv_scam_desc"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="Warn me about scam messages using the internet"
+        android:textSize="14sp"
+        android:textColor="#888888"
+        app:layout_constraintBottom_toTopOf="@id/switch_scam_protection"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp"
+        android:layout_marginBottom="4dp" />
+
+    <com.google.android.material.switchmaterial.SwitchMaterial
+        android:id="@+id/switch_scam_protection"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="Smart scam protection"
+        android:textSize="18sp"
+        android:textColor="#1A1A2E"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        app:layout_constraintBottom_toTopOf="@id/tv_user_name"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp"
+        android:layout_marginBottom="16dp" />
 
     <TextView
         android:id="@+id/tv_user_name"

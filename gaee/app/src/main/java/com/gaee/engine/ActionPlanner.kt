@@ -16,7 +16,9 @@ class ActionPlanner(
         lastCacheHitId = null
 
         if (intent.unknown) {
-            return listOf(ToolCall("TtsTool", mapOf("text" to "Sorry, I did not understand that. Please try again.")))
+            // Never a dead-end: hand anything without a built-in action to the conversational brain,
+            // which answers, explains, or guides instead of a flat "I didn't understand".
+            return listOf(ToolCall("AnswerTool", mapOf("question" to transcript)))
         }
 
         // Attempt cache lookup when embedding engine is ready

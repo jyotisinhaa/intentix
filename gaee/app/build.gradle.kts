@@ -1,8 +1,18 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     id("org.jetbrains.kotlin.kapt")
 }
+
+// Load secrets from gaee/.env (gitignored). Falls back to a real env var, then a placeholder.
+val envProps = Properties().apply {
+    val envFile = rootProject.file(".env")
+    if (envFile.exists()) envFile.inputStream().use { load(it) }
+}
+fun secret(key: String, default: String): String =
+    envProps.getProperty(key) ?: System.getenv(key) ?: default
 
 android {
     namespace = "com.gaee"
@@ -14,6 +24,9 @@ android {
         targetSdk = 35
         versionCode = 2
         versionName = "2.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "CLAUDE_API_KEY", "\"${secret("CLAUDE_API_KEY", "YOUR_CLAUDE_API_KEY")}\"")
+        buildConfigField("String", "OPENWEATHERMAP_API_KEY", "\"${secret("OPENWEATHERMAP_API_KEY", "YOUR_OPENWEATHERMAP_API_KEY")}\"")
     }
 
     buildTypes {
@@ -58,4 +71,9 @@ dependencies {
     implementation(libs.onnxruntime.android)
     implementation(libs.gson)
     implementation(libs.work.runtime.ktx)
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.0")
+    // JVM-only unit tests for pure logic (e.g. ScamDetector) — run with `gradlew testDebugUnitTest`.
+    testImplementation("junit:junit:4.13.2")
 }

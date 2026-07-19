@@ -23,10 +23,24 @@ class LlmPlanner(private val apiKey: String) {
         .build()
     private val gson = Gson()
 
+    // Guardrail 3c — the recovery re-planner may ONLY emit these navigation/observation tools.
+    // Anything else (CallTool, SmsTool, WebFetcherTool, AppLauncherTool, SchedulerTool, …) would let
+    // the re-planner initiate a sensitive action mid-task, bypassing the front-door confirmation gate.
+    private val replanAllowedTools = setOf("UINavigator", "ScreenReaderTool", "TtsTool")
+
     // Complex, multi-step tasks need stronger reasoning → route to Sonnet.
     private val complexIntents = setOf(
         "send_whatsapp", "send_whatsapp_media", "book_uber", "order_food",
         "trip_plan", "multi_app_task", "schedule_task"
+    )
+
+    // Simple, single-tool device actions don't need the LLM. Asking it risks a redundant
+    // generic TtsTool step that talks over a tool's own spoken output (e.g. weather). Use the
+    // deterministic fallback plan for these instead.
+    private val deterministicIntents = setOf(
+        "get_weather", "open_camera", "open_app", "set_volume", "toggle_wifi",
+        "go_back", "read_screen", "control_media", "ask_question",
+        "set_alarm", "set_reminder", "cancel_alarm", "device_control"
     )
 
     private fun chooseModel(intent: IntentResult): String =
@@ -41,6 +55,7 @@ class LlmPlanner(private val apiKey: String) {
     ): Pair<List<ToolCall>, List<String>> =
         withContext(Dispatchers.IO) {
             if (apiKey == "YOUR_CLAUDE_API_KEY") return@withContext fallbackPlan(intent)
+            if (intent.intent in deterministicIntents) return@withContext fallbackPlan(intent)
 
             try {
                 val argsJson = gson.toJson(intent.args)
@@ -68,7 +83,9 @@ class LlmPlanner(private val apiKey: String) {
                 val response = client.newCall(req).execute()
                 if (!response.isSuccessful) return@withContext fallbackPlan(intent)
 
-                val text = JSONObject(response.body?.string() ?: "")
+                val rawBody = response.body?.string() ?: ""
+                android.util.Log.d("LlmPlanner", "intent=${intent.intent} raw=${rawBody.take(500)}")
+                val text = JSONObject(rawBody)
                     .getJSONArray("content").getJSONObject(0).getString("text").trim()
                     .removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
 
@@ -77,8 +94,10 @@ class LlmPlanner(private val apiKey: String) {
                 val slotsType = object : TypeToken<List<String>>() {}.type
                 val steps: List<ToolCall> = gson.fromJson(json.getAsJsonArray("steps"), stepsType)
                 val slots: List<String> = gson.fromJson(json.getAsJsonArray("args_slots"), slotsType)
+                android.util.Log.d("LlmPlanner", "plan steps=${steps.map { it.toolName + it.args }}")
                 steps to slots
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                android.util.Log.e("LlmPlanner", "generatePlan failed → fallback", e)
                 fallbackPlan(intent)
             }
         }
@@ -88,26 +107,18 @@ class LlmPlanner(private val apiKey: String) {
             "cancel_alarm" -> {
                 val mode = intent.args["mode"] ?: "next"
                 val time = intent.args["time"] ?: ""
-                val msg = when (mode) {
-                    "all" -> "All your alarms have been cancelled."
-                    "time" -> "Your $time alarm has been cancelled."
-                    else -> "Your next alarm has been cancelled."
-                }
                 val toolArgs = mutableMapOf("action" to "cancel", "mode" to mode)
                 if (time.isNotEmpty()) toolArgs["time"] = time
-                listOf(
-                    ToolCall("AlarmTool", toolArgs),
-                    ToolCall("TtsTool", mapOf("text" to msg))
-                ) to emptyList()
+                listOf(ToolCall("AlarmTool", toolArgs)) to emptyList()  // AlarmTool speaks the result
             }
             "set_alarm" -> listOf(
-                ToolCall("AlarmTool", mapOf("time" to "{time}", "label" to "{label}")),
-                ToolCall("TtsTool", mapOf("text" to "Alarm set for {time}."))
-            ) to listOf("time", "label")
+                ToolCall("AlarmTool", mapOf("time" to "{time}", "label" to "{label}", "days" to "{days}"))
+            ) to listOf("time", "label", "days")
             "set_reminder" -> listOf(
-                ToolCall("ReminderTool", mapOf("time" to "{time}", "message" to "{message}")),
-                ToolCall("TtsTool", mapOf("text" to "Reminder set for {time}."))
-            ) to listOf("time", "message")
+                ToolCall("ReminderTool", mapOf(
+                    "time" to "{time}", "message" to "{message}", "repeatMinutes" to "{repeatMinutes}"
+                ))
+            ) to listOf("time", "message", "repeatMinutes")
             "call_contact" -> listOf(
                 ToolCall("ContactResolverTool", mapOf("query" to "{name}")),
                 ToolCall("CallTool", mapOf("name" to "{resolvedName}", "phone" to "{phone}")),
@@ -168,6 +179,12 @@ class LlmPlanner(private val apiKey: String) {
             "schedule_task" -> listOf(
                 ToolCall("SchedulerTool", mapOf("task" to "{task}", "time" to "{time}"))
             ) to listOf("task", "time")
+            "ask_question" -> listOf(
+                ToolCall("AnswerTool", mapOf("question" to "{question}"))
+            ) to listOf("question")
+            "device_control" -> listOf(
+                ToolCall("DeviceControlTool", mapOf("action" to "{action}"))
+            ) to listOf("action")
             else -> listOf(
                 ToolCall("TtsTool", mapOf("text" to "Sorry, I could not figure out how to do that."))
             ) to emptyList()
@@ -283,7 +300,12 @@ Respond ONLY with this JSON (no markdown, no explanation):
 
             val json = gson.fromJson(text, JsonObject::class.java)
             val stepsType = object : TypeToken<List<ToolCall>>() {}.type
-            gson.fromJson<List<ToolCall>>(json.getAsJsonArray("steps"), stepsType) ?: emptyList()
+            val steps = gson.fromJson<List<ToolCall>>(json.getAsJsonArray("steps"), stepsType)
+                ?: emptyList()
+            // Guardrail 3c: recovery may only navigate/observe — never initiate a call, SMS, web
+            // POST, app-switch, or scheduled job. One forbidden tool discards the whole recovery
+            // (ExecutionEngine then falls back to its graceful apology + stop).
+            if (steps.any { it.toolName !in replanAllowedTools }) emptyList() else steps
         } catch (_: Exception) {
             emptyList()
         }
@@ -314,6 +336,7 @@ What is ACTUALLY on the screen right now (tap labels that truly exist here — t
 $screen
 
 Rules:
+- You may use ONLY these tools: UINavigator, ScreenReaderTool, TtsTool. Never use CallTool, SmsTool, WebFetcherTool, AppLauncherTool, SchedulerTool or any other tool. If finishing the goal would require one of those, instead return a single TtsTool step telling the user to say the command again so it can be confirmed safely.
 - Output ONLY the remaining steps needed from here to finish the goal. Do not repeat steps already completed.
 - Match the real on-screen text above. If a label differs (e.g. "Send message" instead of "Send"), use what is actually shown.
 - If you cannot find the target, try UINavigator "scroll"/"swipe" to reveal it, or UINavigator "find" to confirm presence.

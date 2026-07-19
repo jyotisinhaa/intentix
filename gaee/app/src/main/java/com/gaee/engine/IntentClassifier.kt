@@ -17,8 +17,8 @@ import java.util.concurrent.TimeUnit
 
 class IntentClassifier(private val context: Context) {
 
-    // Replace with your actual Claude API key
-    val claudeApiKey = "YOUR_CLAUDE_API_KEY"
+    // Loaded from gaee/.env at build time (see BuildConfig / build.gradle.kts)
+    val claudeApiKey = com.gaee.BuildConfig.CLAUDE_API_KEY
     private val claudeModel = "claude-haiku-4-5"
     private val claudeApiUrl = "https://api.anthropic.com/v1/messages"
 
@@ -70,9 +70,17 @@ class IntentClassifier(private val context: Context) {
         val hasInternet = isNetworkAvailable()
         val raw = when {
             currentTier == ModelTier.ON_DEVICE -> classifyOnDevice(transcript)
-            currentTier == ModelTier.CLOUD && hasInternet -> classifyCloud(transcript)
+            currentTier == ModelTier.CLOUD && hasInternet -> {
+                // Keyword-first: an unambiguous device command (alarm, reminder, call, weather, …)
+                // is matched locally and does NOT go to the cloud — faster, and it stops the LLM
+                // from misrouting a clear command to Q&A. Only ambiguous input / real questions
+                // (which the keyword matcher leaves at low confidence) fall through to Claude.
+                val kw = classifyKeywords(transcript)
+                if (kw.confidence >= 0.85f) kw else classifyCloud(transcript)
+            }
             else -> classifyKeywords(transcript)
         }
+        android.util.Log.d("IntentClassifier", "tier=$currentTier intent=${raw.intent} conf=${raw.confidence}")
         return normalizeArgs(raw, transcript)
     }
 
@@ -89,6 +97,14 @@ class IntentClassifier(private val context: Context) {
         if (result.intent != "set_alarm" && result.intent != "set_reminder") return result
         val lower = transcript.lowercase()
         val args = result.args.toMutableMap()
+
+        // Resolve relative times ("in 10 minutes", "10 mins", "in 2 hours") to an absolute HH:MM.
+        // The cloud classifier can't do this — it is never told the current time — so compute it
+        // deterministically here. This overrides whatever time the classifier guessed.
+        extractRelativeTime(lower)?.let {
+            args["time"] = it
+            return result.copy(args = args) // relative time is exact — skip AM/PM guessing below
+        }
 
         // Correct AM/PM when LLM returns wrong hour
         val time = args["time"]
@@ -221,8 +237,12 @@ class IntentClassifier(private val context: Context) {
             lower.contains("alarm") || lower.contains("wake me") -> {
                 val time = extractTime(lower) ?: "07:00"
                 val tomorrow = lower.contains("tomorrow")
-                val args = if (tomorrow) mapOf("time" to time, "tomorrow" to "true")
-                           else mapOf("time" to time)
+                val days = extractDays(lower)
+                val args = buildMap {
+                    put("time", time)
+                    if (tomorrow) put("tomorrow", "true")
+                    if (days.isNotEmpty()) put("days", days)
+                }
                 val speak = if (tomorrow) "Opening the alarm for tomorrow at $time. Please tap tomorrow and then save."
                             else "Setting your alarm for $time."
                 IntentResult(
@@ -235,13 +255,18 @@ class IntentClassifier(private val context: Context) {
             }
             lower.contains("remind") -> {
                 val time = extractTime(lower) ?: "09:00"
-                val message = lower.replace(Regex("remind(er)?\\s*(me)?\\s*(to|at|for)?\\s*"), "").trim()
+                val repeatMinutes = extractRepeatMinutes(lower)
+                val message = cleanReminderMessage(lower)
                 IntentResult(
                     intent = "set_reminder",
                     confidence = 0.85f,
-                    args = mapOf("time" to time, "message" to message.ifEmpty { "reminder" }),
+                    args = mapOf(
+                        "time" to time,
+                        "message" to message.ifEmpty { "your reminder" },
+                        "repeatMinutes" to repeatMinutes.toString()
+                    ),
                     confirmationRequired = false,
-                    speakBefore = "Setting a reminder for $time."
+                    speakBefore = "Setting your reminder."
                 )
             }
             lower.contains("call") && !lower.contains("who called") -> {
@@ -342,6 +367,15 @@ class IntentClassifier(private val context: Context) {
                     speakBefore = "Opening the camera."
                 )
             }
+            deviceControlAction(lower) != null -> {
+                IntentResult(
+                    intent = "device_control",
+                    confidence = 0.88f,
+                    args = mapOf("action" to deviceControlAction(lower)!!),
+                    confirmationRequired = false,
+                    speakBefore = "Okay."
+                )
+            }
             lower.contains("what does this say") || lower.contains("read the screen") ||
                 lower.contains("read this") || lower.contains("what is on the screen") ||
                 lower.contains("what's on the screen") -> {
@@ -410,6 +444,15 @@ class IntentClassifier(private val context: Context) {
                     speakBefore = "Okay, I will work on that and let you know."
                 )
             }
+            isQuestionLike(lower) -> {
+                IntentResult(
+                    intent = "ask_question",
+                    confidence = 0.75f,
+                    args = mapOf("question" to transcript),
+                    confirmationRequired = false,
+                    speakBefore = "Let me check."
+                )
+            }
             else -> {
                 val appName = cleanAppName(transcript)
                 IntentResult(
@@ -434,7 +477,7 @@ class IntentClassifier(private val context: Context) {
                     confidence = 0f,
                     args = emptyMap(),
                     confirmationRequired = false,
-                    speakBefore = "I am not sure what you meant. Could you say that again more slowly?",
+                    speakBefore = "Let me check.",
                     unknown = true
                 )
             }
@@ -459,7 +502,7 @@ class IntentClassifier(private val context: Context) {
                 confidence = 0f,
                 args = emptyMap(),
                 confirmationRequired = false,
-                speakBefore = "I am not sure what you meant. Could you say that again more slowly?",
+                speakBefore = "Let me check.",
                 unknown = true
             )
         }
@@ -470,6 +513,86 @@ class IntentClassifier(private val context: Context) {
         val network = cm.activeNetwork ?: return false
         val caps = cm.getNetworkCapabilities(network) ?: return false
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    // Maps a phrase to a device-control action Android actually allows, or null.
+    private fun deviceControlAction(text: String): String? = when {
+        (text.contains("close") || text.contains("clear") || text.contains("kill")) &&
+            (text.contains("background") || text.contains("running") || text.contains("recent")) &&
+            text.contains("app") -> "recents"
+        text.contains("recent apps") || text.contains("recents") -> "recents"
+        text.contains("go home") || text.contains("home screen") -> "home"
+        text.contains("lock") && (text.contains("phone") || text.contains("screen") || text.contains("device")) -> "lock"
+        text.contains("screenshot") || text.contains("screen shot") -> "screenshot"
+        text.contains("quick settings") || text.contains("quick setting") -> "quick_settings"
+        text.contains("open settings") || text.contains("phone settings") ||
+            text.contains("go to settings") || text.contains("device settings") -> "settings"
+        else -> null
+    }
+
+    // Recurrence for alarms → comma list of MON..SUN (empty = one-shot).
+    private fun extractDays(text: String): String {
+        if (text.contains("weekday")) return "MON,TUE,WED,THU,FRI"
+        if (text.contains("weekend")) return "SAT,SUN"
+        if (text.contains("every day") || text.contains("everyday") || text.contains("daily")) {
+            return "MON,TUE,WED,THU,FRI,SAT,SUN"
+        }
+        if (!text.contains("every")) return ""
+        val map = linkedMapOf(
+            "monday" to "MON", "tuesday" to "TUE", "wednesday" to "WED", "thursday" to "THU",
+            "friday" to "FRI", "saturday" to "SAT", "sunday" to "SUN"
+        )
+        return map.filterKeys { text.contains(it) }.values.joinToString(",")
+    }
+
+    // Recurrence for reminders → repeat interval in minutes (0 = one-shot; 1440 = daily).
+    private fun extractRepeatMinutes(text: String): Int {
+        Regex("""every\s+(\d+)\s*min(?:ute)?s?""").find(text)?.let {
+            return it.groupValues[1].toIntOrNull() ?: 0
+        }
+        Regex("""every\s+(\d+)\s*hours?""").find(text)?.let {
+            return (it.groupValues[1].toIntOrNull() ?: 0) * 60
+        }
+        if (Regex("""every\s+minute""").containsMatchIn(text)) return 1
+        if (Regex("""every\s+hour""").containsMatchIn(text)) return 60
+        if (Regex("""every\s+(day|morning|evening|night|afternoon)""").containsMatchIn(text) ||
+            text.contains("daily") || text.contains("each day")) return 1440
+        return 0
+    }
+
+    // Strip command words, recurrence phrases, and time phrases to leave just the reminder content.
+    private fun cleanReminderMessage(text: String): String {
+        return text
+            .replace(Regex("""\b(set|create|add|make)\s+(a|an|the)?\s*reminder\s*(to|that|for)?\b"""), " ")
+            .replace(Regex("""\bremind(er)?\s*(me)?\s*(to|that|for)?\b"""), " ")
+            .replace(Regex("""\bevery\s+\d+\s*(minutes?|mins?|hours?)\b"""), " ")
+            .replace(Regex("""\bevery\s+(minute|hour|day|morning|evening|night|afternoon)\b"""), " ")
+            .replace(Regex("""\b(daily|each day|everyday)\b"""), " ")
+            .replace(Regex("""\b(at|in)\s+\d{1,2}(:\d{2})?\s*(am|pm|o'?clock)?\b"""), " ")
+            .replace(Regex("""\bin\s+\d+\s*(minutes?|mins?|hours?)\b"""), " ")
+            .replace(Regex("""^\s*(to|that|for)\s+"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+    }
+
+    // Resolves ONLY relative expressions ("in 10 minutes", "10 mins", "in 2 hours") to an absolute
+    // HH:MM based on the current time. Returns null if the text has no relative time.
+    private fun extractRelativeTime(text: String): String? {
+        Regex("""(?:in\s+)?(\d+)\s*min(?:ute)?s?""").find(text)?.let { m ->
+            val mins = m.groupValues[1].toIntOrNull() ?: return null
+            val cal = java.util.Calendar.getInstance().apply { add(java.util.Calendar.MINUTE, mins) }
+            return "%02d:%02d".format(
+                cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE)
+            )
+        }
+        Regex("""(?:in\s+)?(\d+)\s*hours?""").find(text)?.let { m ->
+            val hrs = m.groupValues[1].toIntOrNull() ?: return null
+            val cal = java.util.Calendar.getInstance().apply { add(java.util.Calendar.HOUR_OF_DAY, hrs) }
+            return "%02d:%02d".format(
+                cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE)
+            )
+        }
+        return null
     }
 
     private fun extractTime(text: String): String? {
@@ -575,6 +698,21 @@ class IntentClassifier(private val context: Context) {
         return cleaned.split(Regex("\\s+")).take(2).joinToString(" ").trim()
     }
 
+    // Heuristic: does this look like a free-form question rather than an app name / command?
+    // Only used in offline keyword tier — the cloud classifier decides directly.
+    private fun isQuestionLike(lower: String): Boolean {
+        if (lower.contains("?")) return true
+        val starters = listOf(
+            "what", "why", "how", "who", "whom", "whose", "when", "where", "which",
+            "will", "is", "are", "am", "was", "were", "can", "could", "should", "would",
+            "do", "does", "did", "tell me", "explain", "define", "calculate"
+        )
+        val first = lower.trim().substringBefore(' ')
+        if (starters.any { lower.trim().startsWith("$it ") } || first in starters) return true
+        // A multi-word sentence is far more likely a question than an app name.
+        return lower.trim().split(Regex("\\s+")).size >= 4
+    }
+
     private fun isReadNotificationQuery(lower: String): Boolean {
         val readWords = listOf("do i have", "any messages", "any notification", "check message",
             "check notification", "read my", "show my", "what are my", "what notification",
@@ -625,8 +763,8 @@ JSON format:
 
 Valid intents and their args:
   cancel_alarm     → args: {}
-  set_alarm        → args: { time: "HH:MM in 24-hour format e.g. 20:00 for 8pm", label: "string or null" }
-  set_reminder     → args: { time: "HH:MM", message: "string" }
+  set_alarm        → args: { time: "HH:MM 24-hour e.g. 20:00 for 8pm", label: "string or null", days: "comma list of MON,TUE,WED,THU,FRI,SAT,SUN for a repeating alarm, or empty for one-time" }
+  set_reminder     → args: { time: "HH:MM first time", message: "what to do, no time/repeat words", repeatMinutes: "0 for once, N for every N minutes, 60 hourly, 1440 daily" }
   call_contact     → args: { name: "string" }
   send_sms         → args: { name: "string", message: "string" }
   send_whatsapp    → args: { name: "string", message: "string" }
@@ -642,10 +780,14 @@ Valid intents and their args:
   play_media       → args: { query: "string", app: "youtube|spotify|phone" }
   control_media    → args: { action: "play|pause|next|previous|stop" }
   schedule_task    → args: { task: "plain-English task", time: "HH:MM or null" }
+  ask_question     → args: { question: "the user's full question, word for word" }
+  device_control   → args: { action: "recents|home|quick_settings|notifications|settings|lock|screenshot" }
 
 Rules:
+  - Use device_control for phone controls: "close background apps"/"clear recent apps"→recents, "go home"→home, "quick settings"→quick_settings, "open settings"→settings, "lock the phone"→lock, "take a screenshot"→screenshot.
+  - Use ask_question for ANY general question or request for information that is not one of the device actions above — e.g. "will it rain today", "how far is the moon", "who won the match", "what is 15 percent of 200", "how do I make dal". Put the user's exact words in the question arg.
   - confirmation_required must be true for: call_contact, send_sms, send_whatsapp
-  - confirmation_required is false for: cancel_alarm, set_alarm, set_reminder, get_weather, set_volume, toggle_wifi, open_app, open_camera, read_notifications, dismiss_notifications, read_screen, go_back, play_media, control_media, schedule_task
+  - confirmation_required is false for: cancel_alarm, set_alarm, set_reminder, get_weather, set_volume, toggle_wifi, open_app, open_camera, read_notifications, dismiss_notifications, read_screen, go_back, play_media, control_media, schedule_task, ask_question, device_control
   - Use send_whatsapp (not send_sms) when the user says "whatsapp", "on whatsapp", or "whatsapp message"
   - If you cannot match any intent with confidence >= 0.6, set unknown: true and intent: "unknown"
   - speak_before must be simple plain English an elderly person can understand

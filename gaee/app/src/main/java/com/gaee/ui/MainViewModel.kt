@@ -11,10 +11,13 @@ import com.gaee.engine.ExecutionEngine
 import com.gaee.engine.IntentClassifier
 import com.gaee.engine.LlmPlanner
 import com.gaee.engine.ModelDownloader
+import com.gaee.engine.ProactiveAlert
+import com.gaee.engine.ProactiveAlertLog
 import com.gaee.engine.VoiceListener
 import com.gaee.engine.VoiceState
 import com.gaee.model.IntentResult
 import com.gaee.model.ModelTier
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -25,6 +28,7 @@ sealed class UiState {
     object Thinking : UiState()
     data class AwaitingConfirmation(val intent: IntentResult) : UiState()
     data class AwaitingMessage(val promptText: String) : UiState()
+    data class AwaitingActionConfirmation(val title: String, val message: String) : UiState()
     data class Error(val message: String) : UiState()
     data class NeedsCloudPermission(val onApprove: () -> Unit, val onDecline: () -> Unit) : UiState()
     data class ModelDownloading(val progressPercent: Int, val fileName: String) : UiState()
@@ -45,11 +49,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow<UiState>(UiState.Idle)
     val uiState: StateFlow<UiState> = _uiState
 
+    // Proactive scam-warning history (F2). Kept on its OWN flow, not in _uiState — that single slot
+    // is driven by the mic state machine and would clobber/be clobbered by a warning card.
+    val scamAlerts: StateFlow<List<ProactiveAlert>> = ProactiveAlertLog.alerts
+
     private val contactResolver = com.gaee.tools.ContactResolverTool(application)
 
     private var pendingIntent: IntentResult? = null
     private var pendingTranscript: String = ""
     private var awaitingMessageFor: IntentResult? = null
+    // Resolves when the user answers a mid-execution destructive-action popup
+    private var pendingActionConfirm: CompletableDeferred<Boolean>? = null
 
     init {
         contactResolver.saveNickname("my love", "Anurag")
@@ -201,10 +211,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         executionEngine.ttsTool.speak("Cancelled for safety.")
     }
 
+    // Shows the destructive-action popup and suspends the plan until the user answers.
+    private suspend fun requestActionConfirm(title: String, message: String): Boolean {
+        val deferred = CompletableDeferred<Boolean>()
+        pendingActionConfirm = deferred
+        _uiState.value = UiState.AwaitingActionConfirmation(title, message)
+        executionEngine.ttsTool.speak(message)
+        return deferred.await()
+    }
+
+    // Called by the UI when the user taps Yes/No (or dismisses) on the destructive-action popup.
+    fun onActionConfirmResult(approved: Boolean) {
+        val deferred = pendingActionConfirm ?: return
+        pendingActionConfirm = null
+        deferred.complete(approved)
+    }
+
     private suspend fun runPlan(intent: IntentResult) {
         val steps = planner.plan(intent, pendingTranscript)
-        // Pass the goal + planner so ExecutionEngine can re-plan from the live screen if a UI step fails
-        val results = executionEngine.execute(steps, intent, llmPlanner)
+        // Pass the goal + planner so ExecutionEngine can re-plan from the live screen if a UI step fails,
+        // and a confirmer so irreversible taps require the user's explicit (double) yes.
+        val results = executionEngine.execute(steps, intent, llmPlanner, ::requestActionConfirm)
         val success = results.all { it.success }
         planner.lastCacheHitId?.let { id -> actionCache.recordOutcome(id, success) }
         _uiState.value = UiState.Idle
