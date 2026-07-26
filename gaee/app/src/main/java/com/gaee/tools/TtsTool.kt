@@ -12,6 +12,10 @@ class TtsTool(private val context: Context) : BaseTool {
 
     private var tts: TextToSpeech? = null
     private var isReady = false
+    // TextToSpeech init is async. A speak() call that arrives before the engine is ready would
+    // otherwise be dropped silently — bad for a scam warning fired the moment the app starts. Hold
+    // the latest pending text and speak it once initialization completes.
+    private var pendingText: String? = null
 
     init {
         tts = TextToSpeech(context) { status ->
@@ -19,6 +23,7 @@ class TtsTool(private val context: Context) : BaseTool {
                 tts?.language = Locale.US
                 tts?.setSpeechRate(0.85f)
                 isReady = true
+                pendingText?.let { speak(it); pendingText = null }
             }
         }
     }
@@ -32,6 +37,9 @@ class TtsTool(private val context: Context) : BaseTool {
     fun speak(text: String) {
         if (isReady) {
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "gaee_utterance")
+        } else {
+            // Engine still starting up — remember it and speak on init (see the init callback).
+            pendingText = text
         }
     }
 

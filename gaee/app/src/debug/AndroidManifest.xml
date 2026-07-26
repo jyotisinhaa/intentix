@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only manifest additions. Merged into the debug build only; never in release. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Test hook: fire a sample scam through the real detection + alert chain via adb.
+             exported so `adb shell am broadcast` can reach it. Debug builds only. -->
+        <receiver
+            android:name=".debug.DebugScamTrigger"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.gaee.DEBUG_SCAM" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>
