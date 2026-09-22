@@ -196,7 +196,15 @@ class LlmPlanner(private val apiKey: String) {
     private val toolCatalog = """
 Available tools:
 - ContactResolverTool: {query:"name, nickname, or relationship like 'my daughter' or 'mom'"}
-  → outputs {resolvedName, phone} which are available as {resolvedName} and {phone} in later steps
+  → searches the contact's saved name, Contacts-app nickname field, and relation label (mother/
+    father/child/spouse/brother/sister/friend, plus any custom relation label). On success outputs
+    {resolvedName, phone, found:"true", matchSource:"name|nickname|relation|learned"}, available as
+    {resolvedName} and {phone} in later steps.
+  → If it does not know the person, IT ASKS THE USER ITSELF (a mid-plan clarification question,
+    e.g. "I don't know who your daughter is yet. What is their name?") and remembers the answer for
+    next time. Do NOT add your own TtsTool or other step to ask who someone is — the engine cannot
+    answer a question your plan asks; only ContactResolverTool's own built-in clarification works.
+    Just call ContactResolverTool and use {resolvedName}/{phone} in the following steps as normal.
 - AlarmTool: {time:"HH:MM", label:"string"}
 - ReminderTool: {time:"HH:MM", message:"string"}
 - CallTool: {name:"string", phone:"{phone} if ContactResolverTool ran before"}

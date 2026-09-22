@@ -32,6 +32,13 @@ class ExecutionEngine(private val context: Context) {
     companion object {
         // Cap on mid-execution LLM re-plans per task — bounds cost and prevents infinite loops
         private const val MAX_REPLANS = 3
+        // Cap on mid-execution clarification questions per task (e.g. ContactResolverTool asking
+        // "who is your daughter?") — bounds how many times the plan can pause to ask the user.
+        private const val MAX_CLARIFICATIONS = 2
+        // Data keys that steer the clarification loop itself. These must never leak into the
+        // slot-fill context (fillSlotsFromContext) or the cloud re-plan prompt — they are engine
+        // plumbing, not task data.
+        private val CONTROL_KEYS = setOf("needsUserInput", "askUser", "retryArg", "learnAs")
     }
 
     val ttsTool = TtsTool(context)
@@ -71,7 +78,8 @@ class ExecutionEngine(private val context: Context) {
         steps: List<ToolCall>,
         intent: IntentResult? = null,
         replanner: LlmPlanner? = null,
-        confirm: (suspend (title: String, message: String) -> Boolean)? = null
+        confirm: (suspend (title: String, message: String) -> Boolean)? = null,
+        ask: (suspend (question: String) -> String?)? = null
     ): List<ToolResult> {
         val results = mutableListOf<ToolResult>()
         // Accumulates data from previous steps so {slots} can be filled
@@ -79,13 +87,16 @@ class ExecutionEngine(private val context: Context) {
         // Mutable so the re-planner can splice in a fresh set of remaining steps
         val queue = ArrayDeque(steps)
         var replanCount = 0
+        var clarifyCount = 0
 
         android.util.Log.d("ExecutionEngine", "plan=${steps.map { it.toolName }}")
 
         while (queue.isNotEmpty()) {
             val step = queue.removeFirst()
             val filledStep = fillSlotsFromContext(step, context)
-            android.util.Log.d("ExecutionEngine", "run ${filledStep.toolName} ${filledStep.args}")
+            // Arg VALUES may be phone numbers, SMS/WhatsApp message text, or (on a clarification
+            // retry) the relationship pair being taught -- never log those. Key names only.
+            android.util.Log.d("ExecutionEngine", "run ${filledStep.toolName} keys=${filledStep.args.keys}")
 
             val isUiAction = filledStep.toolName == "UINavigator" &&
                 filledStep.args["action"] in setOf("tap", "type", "swipe")
@@ -140,16 +151,61 @@ class ExecutionEngine(private val context: Context) {
                 }
             }
 
+            // 3) Generic clarification loop — ANY tool may pause mid-step and ask the user a
+            //    follow-up question via needsUserInput/askUser/retryArg/learnAs data keys
+            //    (e.g. ContactResolverTool: "I don't know who your daughter is. What is their
+            //    name?"). Not contact-specific — any future tool can opt in the same way. A step
+            //    is asked about at most once; the whole plan is capped at MAX_CLARIFICATIONS.
+            if (!result.success && result.data?.get("needsUserInput") == "true" &&
+                ask != null && clarifyCount < MAX_CLARIFICATIONS) {
+                val question = result.data?.get("askUser")
+                val retryArg = result.data?.get("retryArg")
+                val answer = if (!question.isNullOrBlank() && !retryArg.isNullOrBlank()) ask(question) else null
+                if (!answer.isNullOrBlank() && retryArg != null) {
+                    clarifyCount++
+                    val learnAs = result.data?.get("learnAs")
+                    // retryArg/learnAs are injected by the ENGINE, after runStep has stripped any
+                    // control keys a plan step might otherwise smuggle in via its own args (see
+                    // runStep) -- this is the one path allowed to set them.
+                    val injectedArgs = mapOf(retryArg to answer) +
+                        (learnAs?.let { mapOf("learnAs" to it) } ?: emptyMap())
+                    result = runStep(filledStep, injectedArgs)
+                    // Narrow, deliberate exception to the whitelist below: this speaks a
+                    // "I will remember that..." confirmation that has NO tool of its own to say
+                    // it. That is NOT true in general for the rest of a resumed plan, though —
+                    // call_contact/send_sms/send_whatsapp's fallback plans (LlmPlanner) all end
+                    // with a trailing TtsTool step ("Calling {resolvedName} now." etc.) that runs
+                    // moments after this one. ttsTool.speak() is QUEUE_FLUSH, so a plain speak()
+                    // here gets cut off mid-sentence by that trailing step ("I will re—Calling
+                    // Priya now."). speakAndWait blocks this coroutine until the confirmation
+                    // finishes before the next queued step (and its own speech) can run.
+                    if (result.success && result.speakAfter.isNotBlank()) {
+                        ttsTool.speakAndWait(result.speakAfter)
+                    }
+                }
+                // else: no question/retryArg (malformed contract) or the user's answer came back
+                // null/blank (mishear, timeout, or gave up) — fall through to the normal failure
+                // path below (speak + break). Must never go silent.
+            }
+
             results.add(result)
 
-            // Merge any structured data this step produced into context
-            result.data?.let { context.putAll(it) }
+            // Merge any structured data this step produced into context — excluding the
+            // clarification-loop's own control keys, which must never reach {slot} fill-in or
+            // the cloud re-plan prompt.
+            result.data?.let { context.putAll(it.filterKeys { key -> key !in CONTROL_KEYS }) }
 
             // After a successful UI action, let the next screen settle before the next step
             if (isUiAction && result.success) delay(400)
 
             if (!result.success) {
-                ttsTool.speak(result.speakAfter)
+                // A tool that sets needsUserInput but leaves speakAfter blank would otherwise say
+                // literally nothing here (TtsTool.speak("") is a no-op) -- fall back to a generic,
+                // non-blank message so the user is never left in silence.
+                val message = result.speakAfter.ifBlank {
+                    "Something went wrong. Please tap the button and try again."
+                }
+                ttsTool.speak(message)
                 break
             }
 
@@ -199,11 +255,18 @@ class ExecutionEngine(private val context: Context) {
         return ToolResult(false, SensitiveScreenGuard.guidance(kind), "sensitive_screen_handoff")
     }
 
-    private suspend fun runStep(step: ToolCall): ToolResult {
+    // [engineInjectedArgs] lets the clarification-retry path (above) add retryArg/learnAs AFTER
+    // control keys are stripped from the plan-authored args below -- a plan step (LLM-generated
+    // or cached) must never be able to set these itself. Concretely: an LLM-emitted step like
+    // `ContactResolverTool {query:"Rakesh", learnAs:"my daughter"}` would otherwise rewrite the
+    // relationship map permanently with no clarification round-trip at all. BaseTool's interface
+    // is unchanged -- this parameter is purely an ExecutionEngine-internal plumbing detail.
+    private suspend fun runStep(step: ToolCall, engineInjectedArgs: Map<String, String> = emptyMap()): ToolResult {
+        val sanitizedArgs = (step.args - CONTROL_KEYS) + engineInjectedArgs
         return try {
             val tool = tools[step.toolName]
                 ?: return ToolResult(false, "Something went wrong. Please tap the button and try again.")
-            tool.execute(step.args)
+            tool.execute(sanitizedArgs)
         } catch (e: Exception) {
             ToolResult(false, "Something went wrong. Please tap the button and try again.", e.message)
         }
