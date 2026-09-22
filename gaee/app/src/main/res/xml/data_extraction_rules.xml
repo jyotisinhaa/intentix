@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API 31+ (Android 12+) cloud-backup and device-transfer rules. gaee_contacts.xml is the taught
+  relationship/nickname map ("mom" to "Sunita Sinha", "doctor" to "Dr. Patel") - a plaintext map
+  of who this elderly user's family and doctor are. It must never leave the device via Google
+  Drive Auto Backup or a device to device transfer. Everything else keeps the platform default
+  (full backup); this excludes ONLY that one file, it does not disable allowBackup.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="gaee_contacts.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="gaee_contacts.xml" />
+    </device-transfer>
+</data-extraction-rules>

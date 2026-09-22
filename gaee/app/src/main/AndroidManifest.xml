@@ -43,6 +43,8 @@
 
     <application
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@drawable/ic_launcher_foreground"
         android:label="Hello"
         android:roundIcon="@drawable/ic_launcher_foreground"

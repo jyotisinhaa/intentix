@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pre-API 31 (Android under 12) equivalent of data_extraction_rules.xml - android:fullBackupContent
+  is what allowBackup="true" actually consults on API 26-30 (this app's min SDK is 26). Same
+  exclusion, same reason: gaee_contacts.xml is a plaintext map of this user's family/doctor
+  relationships and must not be swept into a full backup.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="gaee_contacts.xml" />
+</full-backup-content>
